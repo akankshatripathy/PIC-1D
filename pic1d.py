@@ -5,6 +5,7 @@
 
 import numpy as np
 import time
+import matplotlib.pyplot as plt;plt.ion()
 from scipy.integrate import odeint
 from scipy.interpolate import LinearNDInterpolator
 
@@ -14,9 +15,9 @@ charge = 1.609e-19
 ne = 1e19 #electron density (const along SOL flux tube)
 Te = 39 #90 #electron temperature (const along SOL flux tube)
 potSheath = 3.*Te
-Np =int(1e3) #number of markers
+Np =int(1e6) #number of markers
 Nsubcycle = 100
-Ntimes = 10
+Ntimes = 1
 sml_dt = 0.002
 sml_initial_deltaf_noise = 1e-15
 sml_ev2j = charge
@@ -79,11 +80,11 @@ def create_1d_grid():
     Lthetaout = np.cumsum(np.sqrt(np.diff(Lout[:,0])**2 + np.diff(Lout[:,1])**2))
     Lthetaout = np.hstack((0.,Lthetaout))
     x = np.interp(Ltheta, Lthetaout[0:lastind], LparallelOut[0:lastind])
-    plt.figure()
+    #plt.figure()
     #plt.plot(Lout[:,0],Lout[:,1], '.')
     #plt.plot(RZ[wall_nodes, 0],RZ[wall_nodes, 1], '.')
     print(Ltheta)
-    plt.plot(Lthetaout,LparallelOut)
+    #plt.plot(Lthetaout,LparallelOut)
     return x
 
 def load_markers(x,mass,ne,Te,Np,marker_den):
@@ -148,16 +149,19 @@ def charge_update(xp,vp,w1,w2,f0):
     w1new = w1 + (w2new-w2)
     return w1new,w2new,f0new
 
-def calc_f(x,xp,w0,w1):
+def calc_f(x,v,xp,w0,w1):
+    tinterp = time.time()
     indx = np.interp(xp,x,np.arange(x.size))
+    print('interpolation complete, took %0.2f sec' % (time.time() - tinterp))
     wp = indx - np.floor(indx)
-    temp = Te*sml_ev2j
-    v = np.linspace(-4*np.sqrt(temp/mass),4*np.sqrt(temp/mass),32)
     f = np.empty((x.size, v.size))
+    tloop = time.time()
+    indv = np.round(np.interp(vp,v,np.arange(v.size))).astype(int)
+    #check how to use 2 index arrays e.g f[indx,indv]
     for ip in range(xp.size):
-        indv = np.argmin(np.abs(vp[ip] - v))
-        f[np.floor(indx[ip]).astype(int), indv] += w0[ip]*w1[ip]
-        f[np.ceil(indx[ip]).astype(int), indv] += w0[ip]*w1[ip]
+        f[np.floor(indx[ip]).astype(int), indv[ip]] += w0[ip]*w1[ip]
+        f[np.ceil(indx[ip]).astype(int), indv[ip]] += w0[ip]*w1[ip]
+    print('loop complete, took %0.2f sec' % (time.time() - tloop))
     return f
 
 def calc_eden(x,xp,w0,w1):
@@ -258,7 +262,8 @@ if __name__=="__main__":
     #first, load the mesh grid. x=0 is LFS divertor, x[-1] is LFS midplane
     x = create_1d_grid()
     x = np.linspace(x[0],x[-1],x.size)
-
+    temp = Te*sml_ev2j
+    v = np.linspace(-4*np.sqrt(temp/mass),4*np.sqrt(temp/mass),32)
     #next, load the particle data
     marker_den = Np/(x[-1]-x[0])
     t1 = time.time()
@@ -271,61 +276,39 @@ if __name__=="__main__":
 
     #now, do the main time loop
     dt = sml_dt*7.9e-5 #put in units of seconds
-
     eden = np.empty((x.size,Ntimes))
     for it in range(Ntimes):
 	
         print('Step %d' % it)
-        #w1,w2,_  = charge_update(xp,vp,w1,w2,f0)
-
-        #eden[:,it] = calc_eden(x,xp,w0,w1)
-
-        #plot(xp,w1,it)
-
-        #xp,vp,w1,w2 = pushe(xp,vp,w1,w2)
-
-        #foriginal = calc_f(x,xp,w0,w1)
-
-        #fbig = np.zeros(f.shape)
-        #fbig[:,20] = 1e12
-
-        #print(w1.min(),w1.max())
-
-        #w1big,wpdens = meshtoparticle(fbig,x, xp,vp,w0,w1)
-
-        #print(w1big.min(),w1big.max())
-
-        #ftest = calc_f(x,xp,w0,w1big)-foriginal
-
-        #plt.figure()
-
-        #plt.contourf(ftest,cmap = "Reds")
-
-        #plt.title("ftest")
- 
-        #plt.colorbar()
-
-        #plt.figure()
-
-        #plt.contourf(fbig,cmap = "Reds")
-  
-        #plt.title("fbig")
-
-        #plt.colorbar()
-
-        #plt.xlim([15,35])
-
-        #plt.ylim([0,100])
-
-        #w1 = f_source(n_n,Te,dt,w0,f,w1)
-        #fanalytical = get_f0(x,v)
-        #fparticle = calc_f(
+        t2 = time.time()
+        w1,w2,_  = charge_update(xp,vp,w1,w2,f0)
+        print('charge_update complete, took %0.2f sec' % (time.time()-t2))
+        t3 = time.time()
+        eden[:,it] = calc_eden(x,xp,w0,w1)
+        print('calc_eden complete, took %0.2f sec' % (time.time()-t3))
+        t4 = time.time()
+        xp,vp,w1,w2 = pushe(xp,vp,w1,w2)
+        print('pushe complete, took %0.2f sec' % (time.time()-t4))
+        #method 1 
+        t5 = time.time()
+        f = calc_f(x,v,xp,w0,w1)
+        print('calc_f complete, took %0.2f sec' % (time.time()-t5))
+        t6 = time.time()
+        w1 = f_source(n_n,Te,dt,w0,f0,w1)
+        print('f_source complete, took %0.2f sec' % (time.time()-t6))
+        f1 = calc_f(x,v,xp,w0,w1)
+        #method 2
+        #fanalytical = np.ones(x.shape)[:,np.newaxis]* get_f0(x,v)[np.newaxis,:]
+        #fparticle = calc_f(x,v,xp,w0,w1)
         #ftotal = fanalytical + fparticle
+        #t7 = time.time()
+        #w1 = f_sourcegrid(ftotal,xp,vp,w0,w1,n_n)
+        #print('f_sourcegrid complete, took %0.2f sec' % (time.time() -t7))
+        #f1 = calc_f(x,v,xp,w0,w1)
 
-        w1 = f_sourcegrid(ftotal,xp,vp,w0,w1,n_n)
- 
         if np.all(w1 < 0):
  
             print("all w1 negative at time step %d" % it)  
 
-    plot(xp, w1, it)    
+    plot(xp, w1, it)
+   
