@@ -15,7 +15,7 @@ charge = 1.609e-19
 ne = 1e19 #electron density (const along SOL flux tube)
 Te = 39 #90 #electron temperature (const along SOL flux tube)
 potSheath = 3.*Te
-Np =int(1e6) #number of markers
+Np =int(7.5e4) #number of markers
 Nsubcycle = 100
 Ntimes = 1
 sml_dt = 0.002
@@ -139,7 +139,7 @@ def load_neutrals(file_neutrals):
 def get_f0(xp,vp):
     temp = Te*sml_ev2j
     vth = np.sqrt(temp/mass)
-    f0a = ne*np.sqrt(1./(2.*np.pi))/vth*np.exp(-0.5*(vp/vth)**2.)
+    f0a = ne/Te*np.exp(-0.5*(vp/vth)**2.)
     #TODO: Add in f0g eventually
     return f0a
 
@@ -151,16 +151,21 @@ def charge_update(xp,vp,w1,w2,f0):
 
 def calc_f(x,v,xp,w0,w1):
     tinterp = time.time()
-    indx = np.interp(xp,x,np.arange(x.size))
+    indv = np.interp(vp,v,np.arange(v.size))
     print('interpolation complete, took %0.2f sec' % (time.time() - tinterp))
-    wp = indx - np.floor(indx)
+    wpv = indv - np.floor(indv)
     f = np.empty((x.size, v.size))
     tloop = time.time()
-    indv = np.round(np.interp(vp,v,np.arange(v.size))).astype(int)
+    indx = np.round(np.interp(xp,x,np.arange(x.size))).astype(int)
+    Vnear = np.empty(x.shape)
+    Vnear[1:-1] = (x[2:]-x[0:-2])/2
+    Vnear[0] = (x[1]-x[0])/2
+    Vnear[-1] = (x[-1]-x[-1])/2
+    Vgrid = Vnear * (v[1]-v[0])*Te/np.sqrt(2*np.pi)
     #check how to use 2 index arrays e.g f[indx,indv]
     for ip in range(xp.size):
-        f[np.floor(indx[ip]).astype(int), indv[ip]] += w0[ip]*w1[ip]
-        f[np.ceil(indx[ip]).astype(int), indv[ip]] += w0[ip]*w1[ip]
+        f[indx[ip], np.floor(indv[ip]).astype(int)] += (1-wpv[ip])*w0[ip]*w1[ip]/Vgrid[indx[ip]]
+        f[indx[ip], np.ceil(indv[ip]).astype(int)] += wpv[ip]*w0[ip]*w1[ip]/Vgrid[indx[ip]]
     print('loop complete, took %0.2f sec' % (time.time() - tloop))
     return f
 
@@ -183,28 +188,58 @@ def meshtoparticle(df,x,xp,vp,w0,w1):
     v = np.linspace(-4*np.sqrt(temp/mass),4*np.sqrt(temp/mass),32)
     dv = v[1]-v[0]
     w1new = w1.copy()
+    indv = np.interp(vp,v,np.arange(v.size))
+    wpv = indv - np.floor(indv)
+    wpv1 = wpv
+    wpv2 = 1-wpv
+    #wpv1 is for left mesh index, wpv2 is for right mesh index
     indx = np.interp(xp,x,np.arange(x.size))
-    wp = indx - np.floor(indx)
+    indx = np.round(indx)
     wpdens = 0*df.copy()
-    for i in range(v.size):
-        vinds = np.where ((vp > v[i] - dv/2) & (vp <= v[i] + dv/2))[0]
-        for ix in range(x.size):
-            if ix == 0:
-                xstart = x[0]
-                xend = x[1]
-            elif ix == x.size-1:
-                xstart = x[-2]
-                xend = x[-1]
+    Vnear = np.empty(x.shape)
+    Vnear[1:-1] = (x[2:]-x[0:-2])/2
+    Vnear[0] = (x[1]-x[0])/2
+    Vnear[-1] = (x[-1]-x[-1])/2
+    Vgrid = Vnear * (v[1]-v[0])*Te/np.sqrt(2*np.pi)
+    for ix in range(x.size):
+        #to do: fix for end cases, since dx varies
+        xinds = np.where (indx == ix)[0]
+        #switched to v
+        for iv in range(v.size):
+            if iv == 0:
+                vstart = v[0]
+                vend = v[1]
+            elif iv == v.size-1:
+                vstart = v[-2]
+                vend = v[-1]
             else:
-                xstart = x[ix-1]
-                xend = x[ix+1]
-            xinds = np.where((xp > xstart) & (xp <= xend))[0]
+                vstart = v[iv-1]
+                vend = v[iv+1]
+            #end of switching to v
+            vinds = np.where((vp > vstart) & (vp <= vend))[0]
+            if iv == 0:
+                vstart1 = v[0]
+                vend1 = v[0] + dv/2
+            elif iv == v.size-1:
+                vstart1 = v[-1] - dv/2
+                vend1 = v[-1]
+            else:
+                vstart1 = v[iv] - dv/2
+                vend1 = v[iv] + dv/2
+            #vinds1 = np.where((vp > vstart1) & (vp <= vend1))[0]
+            #vinds2 = np.setdiff1d(vinds, vinds1)
+            vinds1 = np.where((vp < v[iv]) & (vp >= vstart))[0]
+            vinds2 = np.where((vp > v[iv]) & (vp <= vend))[0]
+            inds1 = np.intersect1d(xinds,vinds1)
+            inds2 = np.intersect1d(xinds,vinds2)
             inds = np.intersect1d(xinds,vinds)
             if inds.size == 0:continue
-            wpden = np.sum(wp[inds])
-            dfep = (wp[inds]/wpden)*(df[ix,i])
-            w1new[inds] += dfep/w0[inds]
-            wpdens[ix,i] = wpden
+            wpden = np.sum(wpv1[inds1]) + np.sum(wpv2[inds2])
+            dfep1 = (wpv1[inds1]/wpden)*(df[ix,iv])*Vgrid[ix]
+            dfep2 = (wpv2[inds2]/wpden)*(df[ix,iv])*Vgrid[ix]
+            w1new[inds1] += dfep1/w0[inds1]
+            w1new[inds2] += dfep2/w0[inds2]
+            wpdens[ix,iv] = wpden
     #return w1new,wpdens
     return w1new
 
@@ -290,21 +325,21 @@ if __name__=="__main__":
         xp,vp,w1,w2 = pushe(xp,vp,w1,w2)
         print('pushe complete, took %0.2f sec' % (time.time()-t4))
         #method 1 
-        t5 = time.time()
-        f = calc_f(x,v,xp,w0,w1)
-        print('calc_f complete, took %0.2f sec' % (time.time()-t5))
-        t6 = time.time()
-        w1 = f_source(n_n,Te,dt,w0,f0,w1)
-        print('f_source complete, took %0.2f sec' % (time.time()-t6))
-        f1 = calc_f(x,v,xp,w0,w1)
-        #method 2
-        #fanalytical = np.ones(x.shape)[:,np.newaxis]* get_f0(x,v)[np.newaxis,:]
-        #fparticle = calc_f(x,v,xp,w0,w1)
-        #ftotal = fanalytical + fparticle
-        #t7 = time.time()
-        #w1 = f_sourcegrid(ftotal,xp,vp,w0,w1,n_n)
-        #print('f_sourcegrid complete, took %0.2f sec' % (time.time() -t7))
+        #t5 = time.time()
+        #f = calc_f(x,v,xp,w0,w1)
+        #print('calc_f complete, took %0.2f sec' % (time.time()-t5))
+        #t6 = time.time()
+        #w1 = f_source(n_n,Te,dt,w0,f0,w1)
+        #print('f_source complete, took %0.2f sec' % (time.time()-t6))
         #f1 = calc_f(x,v,xp,w0,w1)
+        #method 2
+        fanalytical = np.ones(x.shape)[:,np.newaxis]* get_f0(x,v)[np.newaxis,:]
+        fparticle = calc_f(x,v,xp,w0,w1)
+        ftotal = fanalytical + fparticle
+        t7 = time.time()
+        w1 = f_sourcegrid(ftotal,xp,vp,w0,w1,n_n)
+        print('f_sourcegrid complete, took %0.2f sec' % (time.time() -t7))
+        f1 = calc_f(x,v,xp,w0,w1)
 
         if np.all(w1 < 0):
  
