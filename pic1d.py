@@ -201,6 +201,23 @@ def meshtoparticle(df,x,xp,vp,w0,w1):
     Vnear[0] = (x[1]-x[0])/2
     Vnear[-1] = (x[-1]-x[-1])/2
     Vgrid = Vnear * (v[1]-v[0])*Te/np.sqrt(2*np.pi)
+    #"particle way" of doing things
+    indx = np.round(np.interp(xp,x,np.arange(x.size))).astype(int)
+    indv = np.interp(vp,v,np.arange(v.size), right = np.nan,left = np.nan)
+    indvfloor = np.floor(indv).astype(int)
+    wpv = indv-indvfloor
+    wpv1 = 1-wpv
+    wpv2 = wpv
+    wpden = np.zeros((x.size,v.size))
+    for ip in range(Np):
+        if np.isnan(indv[ip]): continue
+        wpden[indx[ip],indvfloor[ip]] += wpv1[ip]
+        wpden[indx[ip],indvfloor[ip]+1] += wpv2[ip]
+    for ip in range(Np):
+        if np.isnan(indv[ip]): continue
+        w1new[ip] += wpv1[ip]*df[indx[ip],indvfloor[ip]]/wpden[indx[ip],indvfloor[ip]] + wpv2[ip]*df[indx[ip],indvfloor[ip]+1]/wpden[indx[ip],indvfloor[ip]+1] 
+
+    return w1new
     for ix in range(x.size):
         #to do: fix for end cases, since dx varies
         xinds = np.where (indx == ix)[0]
