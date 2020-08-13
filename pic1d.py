@@ -15,9 +15,9 @@ charge = 1.609e-19
 ne = 1e19 #electron density (const along SOL flux tube)
 Te = 39 #90 #electron temperature (const along SOL flux tube)
 potSheath = 3.*Te
-Np =int(7.5e4) #number of markers
+Np =int(1.0e6) #number of markers
 Nsubcycle = 100
-Ntimes = 1
+Ntimes = 5
 sml_dt = 0.002
 sml_initial_deltaf_noise = 1e-15
 sml_ev2j = charge
@@ -110,8 +110,10 @@ def load_markers(x,mass,ne,Te,Np,marker_den):
     indslt = np.where(A < C*va)[0]
     indsge = np.where(A >= C*va)[0]
 
-    v = np.empty((Np,))
-    g = np.empty((Np,))
+    #v = np.empty((Np,))
+    v = np.zeros((Np,))
+    #g = np.empty((Np,))
+    g = np.zeros((Np,))
 
     v[indslt] = A[indslt]/C
     v[indsge] = va - vwidth*np.log(1.+(va-A[indsge]/C)/vwidth)
@@ -126,7 +128,8 @@ def load_markers(x,mass,ne,Te,Np,marker_den):
     w0_adjust = maxwell_norm*np.exp(-0.5*mass*vp*vp/temp) / (g*0.5)   #actual g is half due to -v and v direction
 
     w0 = ne/marker_den*w0_adjust
-    f0 = ne*maxwell_norm*np.exp(-0.5*(vp/vth)**2.)
+    #f0 = ne*maxwell_norm*np.exp(-0.5*(vp/vth)**2.)
+    f0 = ne/Te*np.exp(-0.5*(vp/vth)**2.)
     w1 = sml_initial_deltaf_noise*2.*(np.random.rand(Np)-0.5)
     w2 = sml_initial_deltaf_noise*2.*(np.random.rand(Np)-0.5)
     #w2 = w1.copy() #XGC uses same w1 and w2 initial. Can cause issues I think
@@ -140,6 +143,8 @@ def get_f0(xp,vp):
     temp = Te*sml_ev2j
     vth = np.sqrt(temp/mass)
     f0a = ne/Te*np.exp(-0.5*(vp/vth)**2.)
+    #this is the old way that matches load. Need to change load to match above commented version
+    #f0a = ne*np.sqrt(1./(2.*np.pi))/vth*np.exp(-0.5*(vp/vth)**2.)
     #TODO: Add in f0g eventually
     return f0a
 
@@ -149,21 +154,29 @@ def charge_update(xp,vp,w1,w2,f0):
     w1new = w1 + (w2new-w2)
     return w1new,w2new,f0new
 
-def calc_f(x,v,xp,w0,w1):
+def calc_f(x,v,xp,vp,w0,w1):
     tinterp = time.time()
     indv = np.interp(vp,v,np.arange(v.size))
     print('interpolation complete, took %0.2f sec' % (time.time() - tinterp))
     wpv = indv - np.floor(indv)
-    f = np.empty((x.size, v.size))
+    #f = np.zeros((x.size, v.size))
+    f = np.ones((x.size, v.size))*np.inf
     tloop = time.time()
     indx = np.round(np.interp(xp,x,np.arange(x.size))).astype(int)
-    Vnear = np.empty(x.shape)
+    vth = np.sqrt(Te*sml_ev2j/mass)
+    Vnear = np.zeros(x.shape)
     Vnear[1:-1] = (x[2:]-x[0:-2])/2
     Vnear[0] = (x[1]-x[0])/2
-    Vnear[-1] = (x[-1]-x[-1])/2
-    Vgrid = Vnear * (v[1]-v[0])*Te/np.sqrt(2*np.pi)
+    Vnear[-1] = (x[-1]-x[-2])/2
+    #Vgrid = Vnear * (v[1]-v[0])*Te/np.sqrt(2*np.pi)
+    Vgrid = Vnear * (v[1]-v[0])/vth*Te/np.sqrt(2*np.pi)
     #check how to use 2 index arrays e.g f[indx,indv]
     for ip in range(xp.size):
+        
+        if np.isinf(f[indx[ip], np.floor(indv[ip]).astype(int)]):
+               f[indx[ip], np.floor(indv[ip]).astype(int)] = 0
+        if np.isinf(f[indx[ip], np.ceil(indv[ip]).astype(int)]):
+               f[indx[ip], np.ceil(indv[ip]).astype(int)] = 0
         f[indx[ip], np.floor(indv[ip]).astype(int)] += (1-wpv[ip])*w0[ip]*w1[ip]/Vgrid[indx[ip]]
         f[indx[ip], np.ceil(indv[ip]).astype(int)] += wpv[ip]*w0[ip]*w1[ip]/Vgrid[indx[ip]]
     print('loop complete, took %0.2f sec' % (time.time() - tloop))
@@ -175,8 +188,6 @@ def calc_eden(x,xp,w0,w1):
     cnts1,_ = np.histogram(xp,bins=x,weights=wp*w0*w1)
     cnts2,_ = np.histogram(xp,bins=x,weights=(1.-wp)*w0*w1)
     eden = np.zeros(x.shape)
-    eden[0:-1] += cnts1
-    eden[1:]   += cnts2
     return eden
 def f_sourcegrid(f,xp,vp,w0,w1,n_n):
     dfel = n_n[:,np.newaxis]*(0.8e-8*np.sqrt(Te)*np.exp(-13.56/Te)*(1./(1+0.01*Te))*1e-6)*dt*f
@@ -196,7 +207,7 @@ def meshtoparticle(df,x,xp,vp,w0,w1):
     indx = np.interp(xp,x,np.arange(x.size))
     indx = np.round(indx)
     wpdens = 0*df.copy()
-    Vnear = np.empty(x.shape)
+    Vnear = np.zeros(x.shape)
     Vnear[1:-1] = (x[2:]-x[0:-2])/2
     Vnear[0] = (x[1]-x[0])/2
     Vnear[-1] = (x[-1]-x[-1])/2
@@ -215,8 +226,7 @@ def meshtoparticle(df,x,xp,vp,w0,w1):
         wpden[indx[ip],indvfloor[ip]+1] += wpv2[ip]
     for ip in range(Np):
         if np.isnan(indv[ip]): continue
-        w1new[ip] += wpv1[ip]*df[indx[ip],indvfloor[ip]]/wpden[indx[ip],indvfloor[ip]] + wpv2[ip]*df[indx[ip],indvfloor[ip]+1]/wpden[indx[ip],indvfloor[ip]+1] 
-
+        w1new[ip] += (wpv1[ip]*df[indx[ip],indvfloor[ip]]/wpden[indx[ip],indvfloor[ip]] + wpv2[ip]*df[indx[ip],indvfloor[ip]+1]/wpden[indx[ip],indvfloor[ip]+1])/w0[ip] 
     return w1new
     for ix in range(x.size):
         #to do: fix for end cases, since dx varies
@@ -328,7 +338,9 @@ if __name__=="__main__":
 
     #now, do the main time loop
     dt = sml_dt*7.9e-5 #put in units of seconds
-    eden = np.empty((x.size,Ntimes))
+    eden = np.zeros((x.size,Ntimes))
+    #Ntimes = 0
+    #simplefilter('error')
     for it in range(Ntimes):
 	
         print('Step %d' % it)
@@ -343,24 +355,32 @@ if __name__=="__main__":
         print('pushe complete, took %0.2f sec' % (time.time()-t4))
         #method 1 
         #t5 = time.time()
-        #f = calc_f(x,v,xp,w0,w1)
+        #fparticle = calc_f(x,v,xp,vp,w0,w1)
         #print('calc_f complete, took %0.2f sec' % (time.time()-t5))
         #t6 = time.time()
         #w1 = f_source(n_n,Te,dt,w0,f0,w1)
         #print('f_source complete, took %0.2f sec' % (time.time()-t6))
-        #f1 = calc_f(x,v,xp,w0,w1)
+        #f1 = calc_f(x,v,xp,vp,w0,w1)
         #method 2
         fanalytical = np.ones(x.shape)[:,np.newaxis]* get_f0(x,v)[np.newaxis,:]
-        fparticle = calc_f(x,v,xp,w0,w1)
+        fparticle = calc_f(x,v,xp,vp,w0,w1)
         ftotal = fanalytical + fparticle
         t7 = time.time()
         w1 = f_sourcegrid(ftotal,xp,vp,w0,w1,n_n)
         print('f_sourcegrid complete, took %0.2f sec' % (time.time() -t7))
-        f1 = calc_f(x,v,xp,w0,w1)
+        f1 = calc_f(x,v,xp,vp,w0,w1)
 
         if np.all(w1 < 0):
  
             print("all w1 negative at time step %d" % it)  
 
     plot(xp, w1, it)
-   
+    plt.figure()
+    vth = np.sqrt(Te*sml_ev2j/mass)
+    plt.contourf(v/vth,x,f1,100,extend='both',cmap = "Reds")
+    plt.ylim([0,20])
+    plt.xlabel("$v_\parallel/v_{th}$")
+    plt.ylabel("$L_\parallel$")
+    plt.figure()
+    plt.plot(f1[1,:])
+     
